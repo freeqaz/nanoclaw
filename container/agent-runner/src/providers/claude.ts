@@ -459,6 +459,16 @@ export class ClaudeProvider implements AgentProvider {
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
+      let sessionId: string | undefined;
+      // This-turn-scoped recovery source: the last visible assistant text seen
+      // in THIS stream. Used to rescue an empty final `result` (a reasoning
+      // model ending on a thinking-only turn) WITHOUT re-reading the on-disk
+      // transcript. The transcript read was doubly wrong: it raced the current
+      // turn's not-yet-flushed answer, and when the current turn was genuinely
+      // text-less it resurfaced a PRIOR turn's reply (observed live: a
+      // "What are your capabilities?" turn was answered with the previous
+      // turn's "Yep, working!").
+      let lastAssistantText: string | null = null;
       for await (const message of sdkResult) {
         if (aborted) return;
         messageCount++;
@@ -467,14 +477,36 @@ export class ClaudeProvider implements AgentProvider {
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
+          sessionId = message.session_id;
           yield { type: 'init', continuation: message.session_id };
+        } else if (message.type === 'assistant') {
+          // Capture visible assistant text as it streams. Thinking-only or
+          // tool-only assistant messages contribute no text and never clobber a
+          // real answer (we overwrite only on non-empty text), so a trailing
+          // redacted_thinking block leaves the true final answer intact here.
+          const content = (message as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
+          if (Array.isArray(content)) {
+            const t = content.filter((c) => c.type === 'text').map((c) => c.text || '').join('').trim();
+            if (t) lastAssistantText = t;
+          }
         } else if (message.type === 'result') {
           // `result` text exists only on subtype:"success"; error subtypes
           // (e.g. a non-retryable 403 billing_error) carry their message in
           // `errors[]` instead. Surface either so the poll-loop can deliver a
           // billing/quota notice to the user rather than dropping the turn.
           const m = message as { result?: string; is_error?: boolean; errors?: string[] };
-          const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+          let text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+          // A success result with empty text usually means a reasoning model
+          // (e.g. GLM via OpenRouter) ended on a thinking-only turn; recover the
+          // real answer from THIS turn's assistant stream (captured above) so
+          // the <message> block still delivers instead of the turn being
+          // dropped silently.
+          if ((text === null || text.trim() === '') && m.is_error !== true) {
+            if (lastAssistantText) {
+              log("Recovered empty result from this turn's assistant stream (reasoning-model trailing-thinking workaround)");
+              text = lastAssistantText;
+            }
+          }
           yield { type: 'result', text, isError: m.is_error === true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
