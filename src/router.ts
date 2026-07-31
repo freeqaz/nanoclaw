@@ -18,7 +18,7 @@
  * for policy refusals.
  */
 import { getChannelAdapter } from './channels/channel-registry.js';
-import { gateCommand } from './command-gate.js';
+import { gateCommand, relayTaskCommand } from './command-gate.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { recordDroppedMessage } from './db/dropped-messages.js';
 import {
@@ -454,6 +454,21 @@ async function deliverToAgent(
         content: JSON.stringify({ text: `Permission denied: ${gate.command} requires admin access.` }),
       });
       log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
+      return;
+    }
+    if (gate.action === 'taskq') {
+      const reply = await relayTaskCommand(gate.text, deliveryAddr.channelType, deliveryAddr.platformId, userId ?? '');
+      writeOutboundDirect(session.agent_group_id, session.id, {
+        id: `taskq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind: 'chat',
+        platformId: deliveryAddr.platformId,
+        channelType: deliveryAddr.channelType,
+        threadId: deliveryAddr.threadId,
+        content: JSON.stringify({ text: reply }),
+      });
+      log.info('taskq command relayed', { userId, agentGroupId: agent.agent_group_id });
+      // Consumed here: no writeSessionMessage, so /task traffic never enters
+      // the agent's session context and never wakes the container.
       return;
     }
   }
