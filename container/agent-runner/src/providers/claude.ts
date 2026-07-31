@@ -396,6 +396,35 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    // Make an OpenRouter-style model slug (containing "/", e.g. z-ai/glm-5.2)
+    // work through the OneCLI egress gateway. Three env tweaks, in order of
+    // importance (verified against a live OpenRouter + OneCLI-MITM setup):
+    //
+    //   1. ANTHROPIC_API_KEY: '' — THE fix. The gateway injects ANTHROPIC_API_KEY
+    //      ="placeholder", so Claude Code emits an `x-api-key` header. OpenRouter's
+    //      Anthropic-compat endpoint (/v1/messages?beta=true) treats ANY x-api-key
+    //      as a native-Anthropic route and returns **404** for a non-Anthropic
+    //      model like z-ai/glm-5.2 — surfaced as a spurious "model may not exist".
+    //      (Anthropic models tolerate x-api-key, which is why claude-* appeared to
+    //      "work" through the same gateway.) Cleared, Claude Code auths only via
+    //      ANTHROPIC_AUTH_TOKEN -> `Authorization: Bearer`, which the gateway
+    //      rewrites and OpenRouter accepts for every model.
+    //   2. ANTHROPIC_SMALL_FAST_MODEL — pin the background/"fast" model to the same
+    //      slug so those requests don't go out as a default Anthropic id (which
+    //      would 404 on the same ?beta=true path) and to keep spend on GLM.
+    //   3. ANTHROPIC_MODEL + model:undefined — pass the slug via env rather than
+    //      the --model option. Belt-and-suspenders; --model also accepts slugs.
+    const useEnvModel = !!this.model && this.model.includes('/');
+    const effectiveEnv = useEnvModel
+      ? {
+          ...this.env,
+          ANTHROPIC_MODEL: this.model,
+          ANTHROPIC_SMALL_FAST_MODEL: this.model,
+          ANTHROPIC_API_KEY: '',
+        }
+      : this.env;
+    const effectiveModel = useEnvModel ? undefined : this.model;
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
@@ -409,8 +438,8 @@ export class ClaudeProvider implements AgentProvider {
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
-        env: this.env,
-        model: this.model,
+        env: effectiveEnv,
+        model: effectiveModel,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         effort: this.effort as any,
         permissionMode: 'bypassPermissions',
