@@ -17,6 +17,63 @@
 
 ---
 
+## Fork notes — manclaw
+
+This is [freeqaz](https://github.com/freeqaz)'s fork of
+[nanocoai/nanoclaw](https://github.com/nanocoai/nanoclaw), used to run the
+`manclaw` install. It is based on tag **v2.1.17** (`ee7f891`) plus the commits
+below.
+
+It does **not** track upstream `main`, which is 437 commits ahead of v2.1.17 and
+carries no tag of its own. The pin is deliberate: this fork follows the last
+tagged release, not the moving trunk.
+
+### What this fork changes
+
+- **`NANOCLAW_CONTAINER_USERNS` for rootless podman** (`src/container-runner.ts`) —
+  under rootless podman the in-container uid 1000 maps to a host subuid that does
+  not own the bind-mounted session DBs, so the agent-runner died with "attempt to
+  write a readonly database". Setting the var (e.g. `keep-id`) passes `--userns`
+  through. No-op on Docker.
+- **Signal channel adapter** (`src/channels/signal*.ts`) — *upstream's code, not
+  ours*; see the note below.
+- **OpenRouter model slugs via the OneCLI gateway**
+  (`container/agent-runner/src/providers/claude.ts`) — OpenRouter's
+  Anthropic-compat endpoint treats any `x-api-key` header as a native-Anthropic
+  route and 404s a non-Anthropic model. Slug-shaped model ids now authenticate
+  with a bearer token only.
+- **Empty-result recovery from the in-memory assistant stream** (same file) — the
+  previous recovery path re-read the on-disk transcript, which lags the SDK
+  `result` event and spans turns, so it could resurface the *previous* turn's
+  reply.
+- **Owner-only `/task` front door** (`src/command-gate.ts`, `src/router.ts`) — the
+  queue command is answered host-side and relayed over loopback to `manclawd`, so
+  it never reaches the container and the agent has no queue authority.
+- **Register the claude provider** (`src/providers/index.ts`) — the barrel ships
+  empty upstream, where providers are added by install skills.
+
+### Credit: the Signal adapter is upstream's
+
+`src/channels/signal.ts` and its two test files were vendored from
+nanocoai/nanoclaw branch `origin/channels` @
+`2989242abb19f4c6c1679d7d1ec93ef2d0ff889e`, where upstream keeps its channel
+adapters (trunk ships none). The only change was reconciling it with the pinned
+v2.1.17 API by stripping `ChannelDefaults`, which does not exist in v2.1.17.
+That code is upstream's work.
+
+### Resyncing with upstream later
+
+```bash
+git remote add upstream https://github.com/nanocoai/nanoclaw.git
+git fetch upstream --tags
+git rebase <new-tag> manclaw-main   # replay our commits onto a newer tag
+```
+
+Expect conflicts in `claude.ts` and `command-gate.ts`, the two files with the
+most local surface area.
+
+---
+
 ## Why I Built NanoClaw
 
 [OpenClaw](https://github.com/openclaw/openclaw) is an impressive project, but I wouldn't have been able to sleep if I had given complex software I didn't understand full access to my life. OpenClaw has nearly half a million lines of code, 53 config files, and 70+ dependencies. Its security is at the application level (allowlists, pairing codes) rather than true OS-level isolation. Everything runs in one Node process with shared memory.
