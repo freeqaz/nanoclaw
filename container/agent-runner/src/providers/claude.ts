@@ -459,7 +459,6 @@ export class ClaudeProvider implements AgentProvider {
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
-      let sessionId: string | undefined;
       // This-turn-scoped recovery source: the last visible assistant text seen
       // in THIS stream. Used to rescue an empty final `result` (a reasoning
       // model ending on a thinking-only turn) WITHOUT re-reading the on-disk
@@ -477,7 +476,6 @@ export class ClaudeProvider implements AgentProvider {
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
-          sessionId = message.session_id;
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'assistant') {
           // Capture visible assistant text as it streams. Thinking-only or
