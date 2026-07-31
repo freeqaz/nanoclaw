@@ -462,6 +462,18 @@ async function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  // manclaw vendor patch: rootless-podman user-namespace mapping.
+  // Under rootless podman the in-container uid 1000 (Dockerfile USER node)
+  // maps to a host subuid that does NOT own the bind-mounted session DBs
+  // (owned by the host user, uid 1000) — the agent-runner then dies with
+  // "attempt to write a readonly database". Setting NANOCLAW_CONTAINER_USERNS
+  // (e.g. "keep-id") maps host uid/gid straight through so the node user owns
+  // the mounts. No-op on Docker (leave the env unset there).
+  const userns = process.env.NANOCLAW_CONTAINER_USERNS?.trim();
+  if (userns) {
+    args.push('--userns', userns);
+  }
+
   // Volume mounts
   for (const mount of mounts) {
     if (mount.readonly) {
