@@ -48,6 +48,7 @@ import {
   writeSessionRouting,
 } from './session-manager.js';
 import type { AgentGroup, Session } from './types.js';
+import { startWriteAudit } from './write-audit.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
@@ -163,6 +164,15 @@ async function spawnContainer(session: Session): Promise<void> {
   // immediate kill before the new container touches the file itself.
   fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
 
+  // manclaw vendor patch: snapshot the writable surface for this spawn.
+  // Placed last on purpose. Every host-side write of this spawn has already
+  // landed — writeSessionRouting, materializeContainerJson,
+  // initGroupFilesystem, composeGroupClaudeMd + syncSkillSymlinks (inside
+  // buildMounts) and the heartbeat unlink above each touch an audited root —
+  // so none of them is attributed to the agent. Derived from `mounts`, so it
+  // stays runtime-agnostic. Never throws; inert when the binary isn't built.
+  const audit = await startWriteAudit(containerName, session.id, mounts);
+
   const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   activeContainers.set(session.id, { process: container, containerName });
@@ -190,6 +200,9 @@ async function spawnContainer(session: Session): Promise<void> {
   // on a wall-clock timer.
 
   container.on('close', (code) => {
+    // Close the write audit before host-side churn resumes. Idempotent, so
+    // the `error` handler below can fire it too without double-reporting.
+    audit.finish();
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
@@ -202,6 +215,7 @@ async function spawnContainer(session: Session): Promise<void> {
   });
 
   container.on('error', (err) => {
+    audit.finish();
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
